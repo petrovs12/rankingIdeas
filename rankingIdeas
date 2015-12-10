@@ -1,0 +1,90 @@
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load(data.table,magrittr,truncdist,PerformanceAnalytics)
+truncdist::rtrunc(n = 10,spec = "norm",a=1,b=10,mean=4,sd=0.05)
+
+set.seed(123)
+# simulate stock with initial price 10
+initPrice = 10
+priceSeries <- data.table(time=1:1003,increments=rnorm(1003,mean=0,sd = 0.3))
+priceSeries[,price:=initPrice+cumsum(increments)]
+priceSeries[,plot(price)]
+setkey(priceSeries,"time")
+#small utility func
+naFill=function(x){
+  x<-as.numeric(as.character(x)) #first convert each column into numeric if it is from factor
+  x[is.na(x)] =0 #convert the item with NA to median value from the column
+  x #display the column
+}
+
+
+
+#generate some trades on the time series above
+generateSignals <- function(priceSeries,
+                            minNumTrades=3,
+                            maxNumTrades=20,
+                            delayMin=0,
+                            delayMax=3,
+                            sizeMean=5,
+                            sizeSD=1,
+                            minTime=1,
+                            maxTime=1000,
+                            closeSignalWait=60
+) {
+                              initialCapital <- 100
+#
+                              tradeCount <- runif(1,minNumTrades,maxNumTrades)# how many trades
+                              tradeSizes <- rtrunc(n = tradeCount,spec = "norm",a=1,b=Inf,mean=sizeMean,sd=sizeSD)# sizes
+                              tradeTimes <- floor(runif(tradeCount,minTime,maxTime - delayMax))# times of signal generation
+                              tradeExecTimes <- sapply(tradeTimes, function(x)floor(min(x+runif(1,delayMin,delayMax),maxTime - delayMax)))# time of execution
+                              # currently this is used, but might use the initiation times instead and ignore slippage for the ranking purpose
+                              tradeCloseSignal <- sapply(tradeExecTimes, function(x)floor(min(maxTime,x+runif(1,0,closeSignalWait))))# trade closing times
+                              tradeCloseExec <- sapply(tradeCloseSignal, function(x)floor(min(maxTime,x+runif(1,delayMin,delayMax))))# plus delay
+                              indexes <- 1:tradeCount
+                              # df <- data.table(time=tradeTimes,execTimes=tradeExecTimes,sizes=tradeSizes,tradeClose=tradeCloseSignal,finalClose=tradeClose)
+                              dfstart <- data.table(indices=indexes,time=tradeExecTimes,declareTimes=tradeTimes,sizes=tradeSizes,sign=1)# this is considering actual execution times, but
+                              dfend <- data.table(indices=indexes,time=tradeCloseExec,declareTimes=tradeCloseSignal,sizes=tradeSizes,sign=-1)# can also do it based on trade signal time
+                              df <- rbind2(dfstart,dfend)[order(indices)]
+                              setkey(df,"time")
+                              df[,fee:=sizes*0.01]# the fees- can also ignore for ranking purposes
+                              joined <- as.data.frame(df[priceSeries])
+                              joined[is.na(joined)] <- 0
+                              joined <- as.data.table(joined)
+                              joined[,position:=cumsum(sizes*sign)]# trading position on the stocks
+                              joined[,funds:=cumsum(-price*(sizes+fee)*sign)]
+                              joined[,value:=initialCapital+price*position+funds]#portfolio value
+                              joined[,dummyDates:=as.Date(1:nrow(joined))]#this is to confirm to the API of the lib, used bellow
+                              joined[,returns:=c(1,tail(value/shift(value),-1))-1]# convert to returns- formulas are a bit rusty, but for illustration should be fine
+                              joined#return the data frame with the complete "trading history" . The stuff we care about is in the value column,mostly
+                            }
+#so from here we simply do some stuff here
+joined <- generateSignals(priceSeries)
+# some of the usual performance measures- very basic and
+# sharpe and sortino can be updated on the fly, since they use only summary stats e.g. see here
+# http://math.stackexchange.com/questions/20593/calculate-variance-from-a-stream-of-sample-values
+# refinement to "age" previous performance is possible as well by using algos for sliding window summary stats
+valDates <- as.xts(joined$returns,order.by = joined$dummyDates)
+SharpeRatio(valDates)
+SortinoRatio(valDates)
+#not sure if these are easy to compute incrementally, but should be as well
+VaR(valDates)
+ES(valDates)
+
+
+#bayesian estimator for how much money each trader makes per time unit-
+# also can be implemented on=line. Might be buggy;)
+bayesianEstimator <- function(initParam,priceSeries,valueSeries){
+  initPrice <- priceSeries[1]
+  initValue <- valueSeries[1]
+  priorMu <- 0
+  priceMu <- mean(priceSeries- initPrice)
+  priorSd <- sd(priceSeries)
+  sigmaSeries <- sd(valueSeries)
+  muValue <- mean(valueSeries-initValue)
+  sdValue <- sd(valueSeries-initValue)
+  n <- lengthj(valueSeries)
+  posteriorMu <- (0+n*muValue/sdValue)/(1/priorSd+n/sdValue)
+  posteriorSD <- 1/((1/ sigmaSeries)+n/sdValue )
+  c(mu=posteriorMu,sig=posteriorSD)
+}
+bayesianEstimator(0,joined$price,joined$price)
+
