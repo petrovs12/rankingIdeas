@@ -65,9 +65,9 @@ joined <- generateSignals(priceSeries)
 valDates <- as.xts(joined$returns,order.by = joined$dummyDates)
 SharpeRatio(valDates)
 SortinoRatio(valDates)
-#not sure if these are easy to compute incrementally, but should be as well
-VaR(valDates)
-ES(valDates)
+#not sure if these are easy to compute incrementally, but should be as well. probably not so nice for ranking though
+#VaR(valDates)
+#ES(valDates)
 
 
 #bayesian estimator for how much money each trader makes per time unit-
